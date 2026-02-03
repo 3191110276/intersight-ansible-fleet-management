@@ -1,0 +1,155 @@
+
+---
+- name: Cleanup of Fleet Management
+  hosts: localhost
+  connection: local
+  gather_facts: no
+
+  vars_files:
+    - vars/defaults.yaml
+    - vars/basics.yaml
+    - vars/definitions.yaml
+    - vars/deployments.yaml
+
+  module_defaults:
+    cisco.intersight.intersight_rest_api:
+      api_private_key: "{{ api_private_key }}"
+      api_key_id: "{{ api_key_id }}"
+      api_uri: "{{ api_uri }}"
+      validate_certs: "{{ validate_certs }}"
+
+  tasks:
+  - name: Flatten deployment groups into individual deployments
+    set_fact:
+      flattened_deployments: >-
+        {{
+          flattened_deployments | default([]) + [{
+            'group_name': item.0.name,
+            'org': item.0.org,
+            'definition': item.1.definition
+          }]
+        }}
+    loop: "{{ deployment_groups | subelements('deployments') }}"
+    loop_control:
+      label: "{{ item.0.name }} - {{ item.1.definition }}"
+
+  - name: Get Workload Deployment MOIDs
+    cisco.intersight.intersight_rest_api:
+      resource_path: /workload/WorkloadDeployments
+      query_params:
+        $filter: "Name eq '{{ base_name }}_{{ iter.group_name }}_{{ iter.definition }}'"
+      api_body: {}
+    register: deployment_info
+    loop: "{{ flattened_deployments }}"
+    loop_control:
+      loop_var: iter
+      label: "{{ base_name }}_{{ iter.group_name }}_{{ iter.definition }}"
+
+  - name: Undeploy Workload Deployments
+    cisco.intersight.intersight_rest_api:
+      resource_path: "/workload/WorkloadDeployments/{{ item.api_response.Moid }}"
+      api_body:
+        Action: "Undeploy"
+      update_method: post
+    loop: "{{ deployment_info.results }}"
+    when: 
+      - item.api_response is defined
+      - item.api_response.Moid is defined
+    loop_control:
+      label: "{{ item.api_response.Name | default('N/A') }}"
+    failed_when: false
+
+  - name: Workload Deployments
+    cisco.intersight.intersight_rest_api:
+      resource_path: /workload/WorkloadDeployments
+      query_params:
+        $filter: "Name eq '{{ base_name }}_{{ iter.group_name }}_{{ iter.definition }}'"
+      state: absent
+    loop: "{{ flattened_deployments }}"
+    loop_control:
+      loop_var: iter
+      label: "{{ base_name }}_{{ iter.group_name }}_{{ iter.definition }}"
+
+  - name: Workload Definitions
+    cisco.intersight.intersight_rest_api:
+      resource_path: /workload/WorkloadDefinitions
+      query_params:
+        $filter: "Name eq '{{ base_name }} {{ iter.name }}'"
+      state: absent
+    loop: "{{ definitions }}"
+    loop_control:
+      loop_var: iter
+      label: "{{ base_name }} {{ iter.name }}"
+
+  - name: Schedule Policies
+    cisco.intersight.intersight_rest_api:
+      resource_path: /scheduler/SchedulePolicies
+      query_params:
+        $filter: "Name eq '{{ base_name }}_{{ iter.org }}'"
+      state: absent
+    loop: "{{ maintenance }}"
+    loop_control:
+      loop_var: iter
+      label: "{{ base_name }}_{{ iter.org }}"
+
+  - name: Organization Sharing Rules
+    cisco.intersight.intersight_rest_api:
+      resource_path: /iam/SharingRules
+      query_params:
+        $filter: "Tags/any(t:t/Key eq '{{base_name}}_identifier' and t/Value eq '{{ base_name }}_{{ iter.name }}')"
+      state: absent
+    loop: "{{ organizations }}"
+    loop_control:
+      loop_var: iter
+      label: "{{ base_name }}_{{ iter.name }}"
+
+  - name: Consumer Organizations
+    cisco.intersight.intersight_rest_api:
+      resource_path: /organization/Organizations
+      query_params:
+        $filter: "Name eq '{{ base_name }}_{{ iter.name }}'"
+      state: absent
+    loop: "{{ organizations }}"
+    loop_control:
+      loop_var: iter
+      label: "{{ base_name }}_{{ iter.name }}"
+
+  - name: Consumer Resource Groups
+    cisco.intersight.intersight_rest_api:
+      resource_path: /resource/Groups
+      query_params:
+        $filter: "Name eq '{{ base_name }}_{{ iter.name }}'"
+      state: absent
+    loop: "{{ organizations }}"
+    loop_control:
+      loop_var: iter
+      label: "{{ base_name }}_{{ iter.name }}"
+
+  - name: IP Pool
+    cisco.intersight.intersight_ip_pool:
+      api_private_key: "{{ api_private_key }}"
+      api_key_id: "{{ api_key_id }}"
+      api_uri: "{{ api_uri }}"
+      validate_certs: "{{ validate_certs }}"
+      name: "{{ base_name }}"
+      organization: "{{ base_name }}_Base"
+      state: absent
+    failed_when: false
+
+  - name: Local User Policy
+    cisco.intersight.intersight_local_user_policy:
+      api_private_key: "{{ api_private_key }}"
+      api_key_id: "{{ api_key_id }}"
+      api_uri: "{{ api_uri }}"
+      validate_certs: "{{ validate_certs }}"
+      name: "{{ base_name }}"
+      organization: "{{ base_name }}_Base"
+      state: absent
+    failed_when: false
+
+  - name: Base Organization
+    cisco.intersight.intersight_rest_api:
+      resource_path: /organization/Organizations
+      query_params:
+        $filter: "Name eq '{{ base_name }}_Base'"
+      state: absent

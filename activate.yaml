@@ -1,0 +1,82 @@
+---
+- name: Activate Fleet Management Deployments
+  hosts: localhost
+  connection: local
+  gather_facts: no
+
+  vars_files:
+    - vars/defaults.yaml
+    - vars/basics.yaml
+    - vars/definitions.yaml
+    - vars/deployments.yaml
+
+  module_defaults:
+    cisco.intersight.intersight_rest_api:
+      api_private_key: "{{ api_private_key }}"
+      api_key_id: "{{ api_key_id }}"
+      api_uri: "{{ api_uri }}"
+      validate_certs: "{{ validate_certs }}"
+
+  tasks:
+  - name: Flatten deployment structure
+    set_fact:
+      flattened_deployments: >-
+        {{
+          flattened_deployments | default([]) + 
+          [{
+            'group_name': group.name,
+            'org': group.org,
+            'maintenance': group.maintenance,
+            'group_blueprint_overrides': group.blueprint_overrides | default([]),
+            'definition': deploy.definition,
+            'qualifiers': deploy.qualifiers | default(''),
+            'deployment_blueprint_overrides': deploy.blueprint_overrides | default([])
+          }]
+        }}
+    loop: "{{ deployment_groups | subelements('deployments') }}"
+    loop_control:
+      loop_var: item
+    vars:
+      group: "{{ item.0 }}"
+      deploy: "{{ item.1 }}"
+
+  - name: Fetch Deployments
+    cisco.intersight.intersight_rest_api:
+      resource_path: /workload/WorkloadDeployments
+      query_params:
+        $filter: "Name eq '{{ base_name }}_{{ iter.group_name }}_{{ iter.definition }}'"
+    loop: "{{ flattened_deployments }}"
+    loop_control:
+      loop_var: iter
+      label: "{{ base_name }}_{{ iter.group_name }}_{{ iter.definition }}"
+    register: deployment_objects
+
+  - name: Prepare Deployments
+    cisco.intersight.intersight_rest_api:
+      resource_path: /workload/WorkloadDeployments/{{ deployment_result.api_response.Moid }}
+      api_body:
+        Action: "PrepareToDeploy"
+    loop: "{{ deployment_objects.results }}"
+    loop_control:
+      loop_var: deployment_result
+      index_var: idx
+      label: "{{ deployment_result.api_response.Name | default('N/A') }}"
+    when: 
+      - deployment_result.api_response.Status is defined
+      - deployment_result.api_response.Status == 'Draft'
+
+  - name: Initiate Deployments
+    cisco.intersight.intersight_rest_api:
+      resource_path: /workload/WorkloadDeployments/{{ deployment_result.api_response.Moid }}
+      api_body:
+        Action: "Deploy"
+        RolloutStrategy:
+          ObjectType: workload.BatchDeployment
+    loop: "{{ deployment_objects.results }}"
+    loop_control:
+      loop_var: deployment_result
+      index_var: idx
+      label: "{{ deployment_result.api_response.Name | default('N/A') }}"
+    when: 
+      - deployment_result.api_response.Status is defined
+      - deployment_result.api_response.Status in ['Draft', 'ReadyToDeploy']
