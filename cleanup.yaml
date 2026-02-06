@@ -1,12 +1,11 @@
-
 ---
-- name: Cleanup of Fleet Management
+- name: Complete Cleanup - Instances, Deployments, Definitions, and Resources
   hosts: localhost
   connection: local
   gather_facts: no
 
   vars_files:
-    - vars/defaults.yaml
+    - vars/auth.yaml
     - vars/basics.yaml
     - vars/definitions.yaml
     - vars/deployments.yaml
@@ -19,6 +18,9 @@
       validate_certs: "{{ validate_certs }}"
 
   tasks:
+  # =============================================================================
+  # Setup: Get deployment and definition information
+  # =============================================================================
   - name: Flatten deployment groups into individual deployments
     set_fact:
       flattened_deployments: >-
@@ -45,43 +47,223 @@
       loop_var: iter
       label: "{{ base_name }}_{{ iter.group_name }}_{{ iter.definition }}"
 
+  - name: Query Workload Definitions
+    cisco.intersight.intersight_rest_api:
+      resource_path: /workload/WorkloadDefinitions
+      query_params:
+        $filter: "Name eq '{{ base_name }} {{ item.name }}'"
+    register: workload_definitions
+    loop: "{{ definitions }}"
+    loop_control:
+      label: "{{ base_name }} {{ item.name }}"
+
+  - name: Build Workload Definition Moid List
+    set_fact:
+      definition_moids: >-
+        {{
+          workload_definitions.results
+          | selectattr('api_response.Moid', 'defined')
+          | map(attribute='api_response.Moid')
+          | list
+        }}
+
+  # =============================================================================
+  # Step 1: Patch Workload Deployments with Empty Qualifiers
+  #         Wait for all instances to be OutOfService
+  # =============================================================================
+  - name: Patch Workload Deployments with Empty Qualifiers
+    cisco.intersight.intersight_rest_api:
+      resource_path: "/workload/WorkloadDeployments/{{ item.api_response.Moid }}"
+      api_body:
+        Qualifiers:
+          - ObjectType: "resource.OdataRuleSetQualifier"
+            Rules:
+              - Selector: "/api/v1/equipment/Chasses?$filter=((Serial eq 'AA'))"
+      update_method: patch
+    loop: "{{ deployment_info.results }}"
+    when:
+      - item.api_response is defined
+      - item.api_response.Moid is defined
+    loop_control:
+      label: "{{ item.api_response.Name | default('N/A') }}"
+
+  - name: Wait for All Instances to be OutOfService
+    cisco.intersight.intersight_rest_api:
+      resource_path: /workload/WorkloadInstances
+      return_list: true
+      query_params:
+        $filter: "WorkloadDefinition.Moid in ('{{ definition_moids | join(\"','\") }}')"
+        $top: 1000
+    register: wait_instances_outofservice
+    until: >
+      wait_instances_outofservice.api_response is defined and
+      (wait_instances_outofservice.api_response | rejectattr('Status', 'equalto', 'OutOfService') | list | length == 0)
+    retries: 60
+    delay: 10
+    when: definition_moids | length > 0
+
+  - name: Log Instance Status After OutOfService Wait
+    debug:
+      msg: "All {{ wait_instances_outofservice.api_response | default([]) | length }} instances are now OutOfService"
+    when:
+      - wait_instances_outofservice is not skipped
+      - wait_instances_outofservice.api_response is defined
+
+  # =============================================================================
+  # Step 2: UnAssign Workload Instances
+  #         Wait for all instances to be gone
+  # =============================================================================
+  - name: UnAssign Workload Instances
+    cisco.intersight.intersight_rest_api:
+      resource_path: "/workload/WorkloadInstances/{{ item.Moid }}"
+      api_body:
+        Action: "UnAssign"
+      update_method: post
+    loop: "{{ wait_instances_outofservice.api_response | default([]) }}"
+    loop_control:
+      label: "{{ item.Moid }} ({{ item.Status }})"
+    when:
+      - wait_instances_outofservice is not skipped
+      - wait_instances_outofservice.api_response is defined
+      - wait_instances_outofservice.api_response | length > 0
+
+  - name: Wait for All Instances to be Gone
+    cisco.intersight.intersight_rest_api:
+      resource_path: /workload/WorkloadInstances
+      return_list: true
+      query_params:
+        $filter: "WorkloadDefinition.Moid in ('{{ definition_moids | join(\"','\") }}')"
+        $top: 1000
+    register: wait_instances_gone
+    until: >
+      wait_instances_gone.api_response is defined and
+      (wait_instances_gone.api_response | length == 0)
+    retries: 60
+    delay: 10
+    when:
+      - wait_instances_outofservice is not skipped
+      - wait_instances_outofservice.api_response is defined
+      - wait_instances_outofservice.api_response | length > 0
+
+  - name: Log Instance Removal Status
+    debug:
+      msg: "All instances have been removed. Remaining instances: {{ wait_instances_gone.api_response | default([]) | length }}"
+    when:
+      - wait_instances_gone is not skipped
+      - wait_instances_gone.api_response is defined
+
+  # =============================================================================
+  # Step 3: Undeploy Workload Deployments
+  #         Wait for all deployments to be in Draft state
+  # =============================================================================
+  - name: Check Deployment Status Before Undeploy
+    cisco.intersight.intersight_rest_api:
+      resource_path: "/workload/WorkloadDeployments/{{ item.api_response.Moid }}"
+      api_body: {}
+    loop: "{{ deployment_info.results }}"
+    when:
+      - item.api_response is defined
+      - item.api_response.Moid is defined
+    loop_control:
+      label: "{{ item.api_response.Name | default('N/A') }}"
+    register: deployment_status_before_undeploy
+
   - name: Undeploy Workload Deployments
     cisco.intersight.intersight_rest_api:
       resource_path: "/workload/WorkloadDeployments/{{ item.api_response.Moid }}"
       api_body:
         Action: "Undeploy"
       update_method: post
+    loop: "{{ deployment_status_before_undeploy.results }}"
+    when:
+      - item.api_response is defined
+      - item.api_response.Moid is defined
+      - item.api_response.Status != 'Draft'
+    loop_control:
+      label: "{{ item.api_response.Name | default('N/A') }} ({{ item.api_response.Status | default('Unknown') }})"
+    failed_when: false
+
+  - name: Wait for All Deployments to be in Draft State
+    cisco.intersight.intersight_rest_api:
+      resource_path: "/workload/WorkloadDeployments/{{ item.api_response.Moid }}"
+      api_body: {}
     loop: "{{ deployment_info.results }}"
-    when: 
+    when:
       - item.api_response is defined
       - item.api_response.Moid is defined
     loop_control:
       label: "{{ item.api_response.Name | default('N/A') }}"
+    register: wait_deployment_draft
+    until: >
+      wait_deployment_draft.api_response is defined and
+      wait_deployment_draft.api_response.Status == 'Draft'
+    retries: 60
+    delay: 10
+
+  - name: Log Deployment Draft Status
+    debug:
+      msg: "Deployment {{ item.api_response.Name | default('N/A') }} is now in Draft state"
+    loop: "{{ wait_deployment_draft.results }}"
+    when:
+      - item.api_response is defined
+
+  # =============================================================================
+  # Step 4: Delete Workload Deployments
+  #         Wait for all deployments to be deleted
+  # =============================================================================
+  - name: Delete Workload Deployments
+    cisco.intersight.intersight_rest_api:
+      resource_path: /workload/WorkloadDeployments
+      query_params:
+        $filter: "Name eq '{{ item.api_response.Name }}'"
+      state: absent
+    loop: "{{ deployment_info.results }}"
+    when:
+      - item.api_response is defined
+      - item.api_response.Name is defined
+    loop_control:
+      label: "{{ item.api_response.Name | default('N/A') }}"
     failed_when: false
 
-  - name: Workload Deployments
+  - name: Wait for All Deployments to be Deleted
     cisco.intersight.intersight_rest_api:
       resource_path: /workload/WorkloadDeployments
       query_params:
         $filter: "Name eq '{{ base_name }}_{{ iter.group_name }}_{{ iter.definition }}'"
-      state: absent
+      api_body: {}
     loop: "{{ flattened_deployments }}"
     loop_control:
       loop_var: iter
       label: "{{ base_name }}_{{ iter.group_name }}_{{ iter.definition }}"
+    register: check_deployments_deleted
+    until: >
+      check_deployments_deleted.api_response is not defined or
+      check_deployments_deleted.api_response.Moid is not defined
+    retries: 30
+    delay: 10
+    failed_when: false
 
-  - name: Workload Definitions
+  - name: Log Deployment Deletion Status
+    debug:
+      msg: "All deployments have been deleted successfully"
+
+  # =============================================================================
+  # Step 5: Delete Workload Definitions
+  # =============================================================================
+  - name: Delete Workload Definitions
     cisco.intersight.intersight_rest_api:
       resource_path: /workload/WorkloadDefinitions
       query_params:
-        $filter: "Name eq '{{ base_name }} {{ iter.name }}'"
+        $filter: "Name eq '{{ base_name }} {{ item.name }}'"
       state: absent
     loop: "{{ definitions }}"
     loop_control:
-      loop_var: iter
-      label: "{{ base_name }} {{ iter.name }}"
+      label: "{{ base_name }} {{ item.name }}"
 
-  - name: Schedule Policies
+  # =============================================================================
+  # Step 6: Delete Schedule Policies
+  # =============================================================================
+  - name: Delete Schedule Policies
     cisco.intersight.intersight_rest_api:
       resource_path: /scheduler/SchedulePolicies
       query_params:
@@ -92,7 +274,10 @@
       loop_var: iter
       label: "{{ base_name }}_{{ iter.org }}"
 
-  - name: Organization Sharing Rules
+  # =============================================================================
+  # Step 7: Delete Organization Sharing Rules
+  # =============================================================================
+  - name: Delete Organization Sharing Rules
     cisco.intersight.intersight_rest_api:
       resource_path: /iam/SharingRules
       query_params:
@@ -103,18 +288,10 @@
       loop_var: iter
       label: "{{ base_name }}_{{ iter.name }}"
 
-  - name: Consumer Organizations
-    cisco.intersight.intersight_rest_api:
-      resource_path: /organization/Organizations
-      query_params:
-        $filter: "Name eq '{{ base_name }}_{{ iter.name }}'"
-      state: absent
-    loop: "{{ organizations }}"
-    loop_control:
-      loop_var: iter
-      label: "{{ base_name }}_{{ iter.name }}"
-
-  - name: Consumer Resource Groups
+  # =============================================================================
+  # Step 8: Delete Consumer Resource Groups
+  # =============================================================================
+  - name: Delete Consumer Resource Groups
     cisco.intersight.intersight_rest_api:
       resource_path: /resource/Groups
       query_params:
@@ -124,32 +301,73 @@
     loop_control:
       loop_var: iter
       label: "{{ base_name }}_{{ iter.name }}"
+    failed_when: false
 
-  - name: IP Pool
+  # =============================================================================
+  # Step 9: Delete Consumer Organizations
+  # =============================================================================
+  - name: Delete Consumer Organizations
+    cisco.intersight.intersight_rest_api:
+      resource_path: /organization/Organizations
+      query_params:
+        $filter: "Name eq '{{ base_name }}_{{ iter.name }}'"
+      state: absent
+    loop: "{{ organizations }}"
+    loop_control:
+      loop_var: iter
+      label: "{{ base_name }}_{{ iter.name }}"
+    failed_when: false
+
+  # =============================================================================
+  # Step 10: Delete IP Pool
+  # =============================================================================
+  - name: Delete IP Pool
     cisco.intersight.intersight_ip_pool:
       api_private_key: "{{ api_private_key }}"
       api_key_id: "{{ api_key_id }}"
       api_uri: "{{ api_uri }}"
       validate_certs: "{{ validate_certs }}"
       name: "{{ base_name }}"
-      organization: "{{ base_name }}_Base"
+      organization: "{{ base_org }}"
       state: absent
     failed_when: false
 
-  - name: Local User Policy
+  # =============================================================================
+  # Step 11: Delete Local User Policy
+  # =============================================================================
+  - name: Delete Local User Policy
     cisco.intersight.intersight_local_user_policy:
       api_private_key: "{{ api_private_key }}"
       api_key_id: "{{ api_key_id }}"
       api_uri: "{{ api_uri }}"
       validate_certs: "{{ validate_certs }}"
       name: "{{ base_name }}"
-      organization: "{{ base_name }}_Base"
+      organization: "{{ base_org }}"
       state: absent
+    register: local_user_delete
     failed_when: false
 
-  - name: Base Organization
+  # =============================================================================
+  # Step 12: Verify Local User Policy Deletion
+  # =============================================================================
+  - name: Verify Local User Policy Deletion
     cisco.intersight.intersight_rest_api:
-      resource_path: /organization/Organizations
+      resource_path: /iam/EndPointUserPolicies
       query_params:
-        $filter: "Name eq '{{ base_name }}_Base'"
-      state: absent
+        $filter: "Name eq '{{ base_name }}'"
+    register: verify_local_user
+    until: >
+      verify_local_user.api_response is not defined or
+      verify_local_user.api_response.Moid is not defined
+    retries: 10
+    delay: 5
+    failed_when: >
+      verify_local_user.api_response is defined and
+      verify_local_user.api_response.Moid is defined
+
+  # =============================================================================
+  # Final Summary
+  # =============================================================================
+  - name: Display Result
+    debug:
+      msg: "Cleanup completed - {{ flattened_deployments | length }} Workload Deployments, {{ definitions | length }} Workload Definitions, {{ maintenance | length }} Schedule Policies, {{ organizations | length }} Consumer Organizations, IP Pool, and Local User Policy removed"

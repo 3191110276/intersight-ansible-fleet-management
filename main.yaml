@@ -1,14 +1,11 @@
-# ansible-playbook -i localhost main.yaml
-# ansible-playbook -i localhost cleanup.yaml
-
 ---
-- name: Initial Deployment of Fleet Management
+- name: Create Multiple Workload Definitions
   hosts: localhost
   connection: local
   gather_facts: no
 
   vars_files:
-    - vars/defaults.yaml
+    - vars/auth.yaml
     - vars/basics.yaml
     - vars/definitions.yaml
     - vars/deployments.yaml
@@ -25,90 +22,65 @@
       Name: UnifiedEdgeChassis
       Blueprint:
         Moid: 68dc8a036e75733101ab7068
+        ObjectType: workload.Blueprint
       Input:
-        Dns:
-          IpVersion: "Ipv4"
-          PrimaryDnsServer: "{{ dns_servers[0] }}"
-          SecondaryDnsServer: "{{ dns_servers[1] }}"
         ImcAccessConfiguration:
           IpAddressPool:
             Moid: "{{ ip_pool.api_response.Moid }}"
-            ObjectType: "ippool.Pool"
+            ObjectType: ippool.Pool
           VlanId: "{{ mgmt_vlan }}"
+        SwitchFirmwareVersion: "{{ chassis_firmware }}"
         LocalUsers:
-          Moid: "{{ local_user.api_response.Moid }}"
-        NtpConfiguration:
-          NtpServers: "{{ ntp_servers }}"
-        PortConfiguration:
-          UnifiedEdgePortSpeed: Auto
-          UplinkPorts: "{{ uplink_ports }}"
-        SerialOverLanPolicy:
-          SolEnabled: false
+          SourceMoid: "{{ local_user.api_response.EndPointUserPolicy.Moid }}"
+          ObjectType: iam.EndPointUserPolicy
+        Password: "{{ password }}"
+        Timezone: "{{ timezone }}"
+        Dns:
+          IpVersion: Ipv4
+          PrimaryDnsServer: "{{ dns_servers[0] }}"
+          SecondaryDnsServer: "{{ dns_servers[1] }}"
         SwitchConfiguration:
-          EnableJumboFrame: "{{ jumbo_frames }}"
           MacAgingSettings:
             MacAgingOption: Default
-        SwitchFirmwareVersion: "{{ chassis_firmware }}"
-        SyslogConfiguration:
-          SyslogServers:
-          - Enabled: false
+          EnableJumboFrame: "{{ jumbo_frames }}"
+        PortConfiguration:
+          UplinkPorts: "{{ uplink_ports }}"
+          UnifiedEdgePortSpeed: Auto
+        VlanConfiguration:
+          Vlans: "{{ allowed_vlans }}"
+        NtpConfiguration:
+          NtpServers: "{{ ntp_servers }}"
+        SerialOverLanPolicy:
+          SolEnabled: false
         PowerConfiguration:
           RedundancyMode: Grid
         ThermalConfiguration:
           FanControlMode: Balanced
-        Timezone: "{{ timezone }}"
-        VlanConfiguration:
-          Vlans: "{{ allowed_vlans }}"
+        SyslogConfiguration:
+          SyslogServers:
+          - Enabled: false
       InputOverride:
-        - Timezone
-        - NtpConfiguration
-        - Dns
+      - Timezone
+      - NtpConfiguration
+      - Dns
       ResourceConstraint:
         Input:
           DeviceModel: UCSXE-ECMC-G1
 
-    red_hat:
-      Name: Red Hat Server
-      Blueprint:
-        Moid: 68dc8a046e75733101ab708a
-      Input:
-        OsDetails:
-          Version: Red Hat Enterprise Linux 10.0
-          Hostname: rhel
-          DeriveHostname: false
-          Password: "{{ os_password }}"
-          OsImage:
-            Moid: "{{ rhel_image }}"
-            ObjectType: softwarerepository.OperatingSystemFile
-          ScuImage:
-            Moid: "{{ scu_image }}"
-            ObjectType: firmware.ServerConfigurationUtilityDistributable
-          Vendor:
-            Moid: 5b7370f16836726e35cc7026
-            ObjectType: hcl.OperatingSystemVendor
-        OsNetworkConfig:
-          DhcpVersionType: IPv4
-          IpConfigType: DHCP
-        Packages:
-        - ping
-        ServerFirmwareVersion: "{{ server_firmware }}"
-        ServerVlanSettings:
-          VlanList: "{{ os_vlans }}"
-      InputOverride: []
-      ResourceConstraint:
-        Input:
-          SlotId: 1
-
-    ubuntu:
+    ubuntu_server:
       Name: Ubuntu Server
       Blueprint:
         Moid: 68dc8a046e75733101ab709e
+        ObjectType: workload.Blueprint
       Input:
+        ServerFirmwareVersion: "{{ server_firmware }}"
+        ServerVlanSettings:
+          VlanList: "{{ os_vlans }}"
         OsDetails:
           Version: Ubuntu Server 24.04.3 LTS
           Hostname: ubuntu
           DeriveHostname: false
-          Password: "{{ os_password }}"
+          Password: "{{ password }}"
           Vendor:
             Moid: 5b7370f16836726e35cc7024
             ObjectType: hcl.OperatingSystemVendor
@@ -121,59 +93,18 @@
         OsNetworkConfig:
           IpConfigType: DHCP
           DhcpVersionType: IPv4
-        ServerFirmwareVersion: "{{ server_firmware }}"
-        ServerVlanSettings:
-          VlanList: "{{ os_vlans }}"
       InputOverride: []
       ResourceConstraint:
         Input:
-          SlotId: 2
-
-    windows:
-      Name: Windows Server
-      Blueprint:
-        Moid: 68dc8a056e75733101ab70a8
-      Input:
-        OsDetails:
-          Version: Windows Server 2025
-          Hostname: windows
-          DeriveHostname: false
-          Password: "{{ os_password }}"
-          Vendor:
-            Moid: 5b7370f16836726e35cc7028
-            ObjectType: hcl.OperatingSystemVendor
-          OsImage:
-            Moid: "{{ windows_image }}"
-            ObjectType: softwarerepository.OperatingSystemFile
-          ScuImage:
-            Moid: "{{ scu_image }}"
-            ObjectType: firmware.ServerConfigurationUtilityDistributable
-        Edition: "{{ windows_edition }}"
-        ProductKey: "{{ windows_key }}"
-        OsNetworkConfig:
-          IpConfigType: DHCP
-          DhcpVersionType: IPv4
-        ServerVlanSettings:
-          VlanList: "{{ os_vlans }}"
-        ServerFirmwareVersion: "{{ server_firmware }}"
-      InputOverride: []
-      ResourceConstraint:
-        Input:
-          SlotId: 3
-
+          SlotId: 1
 
   tasks:
-  - name: Base Organization
+  - name: Get Base Organization
     cisco.intersight.intersight_rest_api:
       resource_path: /organization/Organizations
       query_params:
-        $filter: "Name eq '{{ base_name }}_Base'"
-      api_body:
-        Name: "{{ base_name }}_Base"
-        Description: "Base Organization for Fleet Management"
-        ResourceGroups: []
-      state: present
-    register: base_org
+        $filter: "Name eq '{{ base_org }}'"
+    register: base_org_result
 
   - name: Local User Policy
     cisco.intersight.intersight_local_user_policy:
@@ -183,10 +114,14 @@
       validate_certs: "{{ validate_certs }}"
       name: "{{ base_name }}"
       description: "Local User Policy for Fleet Management"
-      organization: "{{ base_name }}_Base"
-      local_users: "{{local_users}}"
+      organization: "{{ base_org }}"
+      local_users: "{{ local_users }}"
       state: present
     register: local_user
+
+  - name: Debug Local User Policy Response
+    debug:
+      msg: "ObjectType: {{ local_user.api_response.ObjectType }}, Moid: {{ local_user.api_response.Moid }}"
 
   - name: IP Pool
     cisco.intersight.intersight_ip_pool:
@@ -196,7 +131,7 @@
       validate_certs: "{{ validate_certs }}"
       name: "{{ base_name }}"
       description: "IP Pool for Fleet Management"
-      organization: "{{ base_name }}_Base"
+      organization: "{{ base_org }}"
       ipv4_config:
         netmask: "{{ netmask }}"
         gateway: "{{ gateway }}"
@@ -206,18 +141,28 @@
       state: present
     register: ip_pool
 
-  - set_fact:
-      blueprint: "{{ blueprint | default({}) | combine({ item.name: [ unified_edge | combine(item.unified_edge_overrides | default({}), recursive=True) ] }) }}"
+  - name: Build Blueprint Arrays - Add Chassis
+    set_fact:
+      blueprints_by_definition: "{{ blueprints_by_definition | default({}) | combine({ item.name: [unified_edge | combine({'RefName': unified_edge.Name | replace(' - ', '___') | replace(' ', '_')}, recursive=True) | combine(item.chassis_overrides | default({}), recursive=True)] }) }}"
     loop: "{{ definitions }}"
+    loop_control:
+      label: "{{ item.name }}"
 
-  - set_fact:
-      blueprint: >-
+  - name: Build Blueprint Arrays - Add Servers
+    set_fact:
+      blueprints_by_definition: >-
         {{
-          blueprint | combine({
+          blueprints_by_definition | combine({
             item.0.name:
-              blueprint[item.0.name] + [
-                vars[item.1.type] | combine({
-                  'Name': vars[item.1.type].Name ~ ' - Slot ' ~ item.1.slot_id
+              blueprints_by_definition[item.0.name] + [
+                ubuntu_server | combine({
+                  'Name': 'Ubuntu Server - Slot ' ~ item.1.slot_id,
+                  'RefName': ('Ubuntu Server - Slot ' ~ item.1.slot_id) | replace(' - ', '___') | replace(' ', '_'),
+                  'Input': ubuntu_server.Input | combine({
+                    'OsDetails': ubuntu_server.Input.OsDetails | combine({
+                      'Hostname': 'ubuntu' ~ item.1.slot_id
+                    })
+                  }, recursive=True)
                 }, recursive=True) | combine(item.1.overrides | default({}), recursive=True) | combine({
                   'ResourceConstraint': {
                     'Input': {
@@ -229,27 +174,28 @@
           })
         }}
     loop: "{{ definitions | subelements('blueprints') }}"
+    loop_control:
+      label: "{{ item.0.name }} - Slot {{ item.1.slot_id }}"
 
   - name: Query Existing Workload Definitions
     cisco.intersight.intersight_rest_api:
       resource_path: /workload/WorkloadDefinitions
       query_params:
-        $filter: "Name eq '{{ base_name }} {{ iter.name }}'"
+        $filter: "Name eq '{{ base_name }} {{ item.name }}'"
         $orderby: "Version desc"
         $top: 1
     register: existing_definitions
     loop: "{{ definitions }}"
     loop_control:
-      loop_var: iter
-      label: "{{ iter.name }}"
+      label: "{{ item.name }}"
 
   - name: Set Version Numbers
     set_fact:
       existing_versions: >-
         {{
           existing_versions | default({}) | combine({
-            item.iter.name: (
-              (item.api_response.Results[0].Version | int) 
+            item.item.name: (
+              (item.api_response.Results[0].Version | int)
               if (item.api_response.Results is defined and item.api_response.Results | length > 0)
               else (item.api_response.Version | int)
               if (item.api_response.Version is defined)
@@ -259,73 +205,116 @@
         }}
     loop: "{{ existing_definitions.results }}"
     loop_control:
-      label: "{{ item.iter.name }}"
+      label: "{{ item.item.name }}"
 
   - name: Workload Definition - Create New
     cisco.intersight.intersight_rest_api:
       resource_path: /workload/WorkloadDefinitions
       api_body:
-        Name: "{{ base_name }} {{ iter.name }}"
+        Name: "{{ base_name }} {{ item.name }}"
         Version: 1
-        Description: "{{ iter.name }} Definition for {{ base_name }}"
+        Description: "{{ item.name }} Definition for {{ base_name }}"
         Organization:
-          Moid: "{{ base_org.api_response.Moid }}"
+          Moid: "{{ base_org_result.api_response.Moid }}"
         PlatformType:
         - UnifiedEdge
         PreferredVersion: true
-        Blueprints: "{{ blueprint[iter.name] }}"
+        Blueprints: "{{ blueprints_by_definition[item.name] }}"
       state: present
-    when: existing_versions[iter.name] | int == 0
+    when: existing_versions[item.name] | int == 0
     register: workload_definition_new
     loop: "{{ definitions }}"
     loop_control:
-      loop_var: iter
-      label: "{{ iter.name }}"
+      label: "{{ item.name }}"
 
   - name: Workload Definition - Update Existing
     cisco.intersight.intersight_rest_api:
       resource_path: /workload/WorkloadDefinitions
       query_params:
-        $filter: "Name eq '{{ base_name }} {{ iter.name }}' and Version eq {{ existing_versions[iter.name] }}"
+        $filter: "Name eq '{{ base_name }} {{ item.name }}' and Version eq {{ existing_versions[item.name] }}"
       api_body:
-        Name: "{{ base_name }} {{ iter.name }}"
-        Version: "{{ existing_versions[iter.name] }}"
-        Description: "{{ iter.name }} Definition for {{ base_name }}"
+        Name: "{{ base_name }} {{ item.name }}"
+        Version: "{{ existing_versions[item.name] }}"
+        Description: "{{ item.name }} Definition for {{ base_name }}"
         Organization:
-          Moid: "{{ base_org.api_response.Moid }}"
+          Moid: "{{ base_org_result.api_response.Moid }}"
         PlatformType:
         - UnifiedEdge
         PreferredVersion: true
-        Blueprints: "{{ blueprint[iter.name] }}"
+        Blueprints: "{{ blueprints_by_definition[item.name] }}"
       state: present
-    when: existing_versions[iter.name] | int > 0
+    when: existing_versions[item.name] | int > 0
     register: workload_definition_update
     failed_when: false
     loop: "{{ definitions }}"
     loop_control:
-      loop_var: iter
-      label: "{{ iter.name }}"
+      label: "{{ item.name }}"
 
   - name: Workload Definition - New Version
     cisco.intersight.intersight_rest_api:
       resource_path: /workload/WorkloadDefinitions
       query_params:
-        $filter: "Name eq '{{ base_name }} {{ item.iter.name }}' and Version eq {{ existing_versions[item.iter.name] | int + 1 }}"
+        $filter: "Name eq '{{ base_name }} {{ item.item.name }}' and Version eq {{ existing_versions[item.item.name] | int + 1 }}"
       api_body:
-        Name: "{{ base_name }} {{ item.iter.name }}"
-        Version: "{{ existing_versions[item.iter.name] | int + 1 }}"
-        Description: "{{ item.iter.name }} Definition for {{ base_name }}"
+        Name: "{{ base_name }} {{ item.item.name }}"
+        Version: "{{ existing_versions[item.item.name] | int + 1 }}"
+        Description: "{{ item.item.name }} Definition for {{ base_name }}"
         Organization:
-          Moid: "{{ base_org.api_response.Moid }}"
+          Moid: "{{ base_org_result.api_response.Moid }}"
         PlatformType:
         - UnifiedEdge
         PreferredVersion: true
-        Blueprints: "{{ blueprint[item.iter.name] }}"
+        Blueprints: "{{ blueprints_by_definition[item.item.name] }}"
       state: present
-    loop: "{{ workload_definition_attempt.results }}"
+    loop: "{{ workload_definition_update.results }}"
     when: item.failed | default(false)
     loop_control:
-      label: "{{ item.iter.name }}"
+      label: "{{ item.item.name }}"
+
+  - name: Build Chassis Serial List
+    set_fact:
+      all_chassis_serials: >-
+        {{
+          organizations
+          | selectattr('chassis', 'defined')
+          | map(attribute='chassis')
+          | flatten
+          | unique
+          | list
+        }}
+    when: organizations | selectattr('chassis', 'defined') | list | length > 0
+
+  - name: Query All Chassis for Device Registration Moids
+    cisco.intersight.intersight_rest_api:
+      resource_path: /equipment/Chasses
+      return_list: true
+      query_params:
+        $filter: "Serial in ('{{ all_chassis_serials | join(\"','\") }}')"
+        $top: 1000
+    register: chassis_query
+    when: all_chassis_serials is defined and all_chassis_serials | length > 0
+
+  - name: Build Device Registration Moid Map
+    set_fact:
+      device_moids_by_org: >-
+        {{
+          device_moids_by_org | default({}) | combine({
+            item.name: (
+              chassis_query.api_response
+              | selectattr('Serial', 'in', item.chassis)
+              | map(attribute='RegisteredDevice.Moid')
+              | list
+            )
+          })
+        }}
+    loop: "{{ organizations }}"
+    loop_control:
+      label: "{{ item.name }}"
+    when:
+      - chassis_query is not skipped
+      - chassis_query.api_response is defined
+      - chassis_query.api_response is iterable
+      - item.chassis is defined
 
   - name: Consumer Resource Groups
     cisco.intersight.intersight_rest_api:
@@ -335,8 +324,12 @@
       api_body:
         Name: "{{ base_name }}_{{ iter.name }}"
         Qualifier: Allow-Selectors
-        Selectors:
-        #- Selector: "/api/v1/asset/DeviceRegistrations?$filter=DeviceHostname eq 'UCSXE-WZP29229YA0'"
+        Selectors: >-
+          {{
+            [{'Selector': "/api/v1/asset/DeviceRegistrations?$filter=Moid in ('" + "','".join(device_moids_by_org[iter.name]) + "')"}]
+            if (device_moids_by_org is defined and iter.name in device_moids_by_org)
+            else []
+          }}
       state: present
     loop: "{{ organizations }}"
     loop_control:
@@ -371,7 +364,7 @@
         ObjectType: iam.SharingRule
         SharedResource:
           ClassId: mo.MoRef
-          Moid: "{{ base_org.api_response.Moid }}"
+          Moid: "{{ base_org_result.api_response.Moid }}"
           ObjectType: organization.Organization
         SharedWithResource:
           ClassId: mo.MoRef
@@ -400,7 +393,7 @@
         Organization:
           Moid: >-
             {{
-              (base_org.api_response.Moid if (base_name + '_Base') == (base_name + '_' + iter.org)
+              (base_org_result.api_response.Moid if (base_name + '_Base') == (base_name + '_' + iter.org)
               else (consumer_org.results | selectattr('iter.name', 'equalto', iter.org) | first).api_response.Moid)
             }}
         ScheduleParams: "{{ iter.schedules }}"
@@ -427,6 +420,7 @@
             'ntp_servers': item.0.ntp_servers | default([]),
             'definition': item.1.definition,
             'def_abbr': item.1.abbr | default(item.1.definition[:3]),
+            'version': item.1.version | default(item.0.version | default('preferred')),
             'qualifiers': ([{
               'ClassId': 'resource.OdataRuleSetQualifier',
               'ObjectType': 'resource.OdataRuleSetQualifier',
@@ -455,7 +449,7 @@
         Organization:
           Moid: >-
             {{
-              base_org.api_response.Moid if iter.org == 'Base'
+              base_org_result.api_response.Moid if iter.org == 'Base'
               else (consumer_org.results | selectattr('iter.name', 'equalto', iter.org) | first).api_response.Moid
             }}
         Qualifiers: "{{ iter.qualifiers }}"
@@ -464,13 +458,20 @@
           FailureThreshold: 10
           ObjectType: workload.BatchDeployment
         SchedulePolicy:
-          Moid: "{{ (schedule_policy.results | selectattr('iter.name', 'equalto', iter.maintenance) | first).api_response.Moid }}"
+          Moid: "{{ (schedule_policy.results | selectattr('iter.org', 'equalto', iter.org) | first).api_response.Moid }}"
         StartIndexForSuffix: 1
-        WorkloadDefinitionReference:
-          DefinitionName: "{{ base_name }} {{ iter.definition }}"
-          Organization:
-            Moid: "{{ base_org.api_response.Moid }}"
-          UsePreferredVersion: true
+        WorkloadDefinitionReference: >-
+          {{
+            {
+              'DefinitionName': base_name ~ ' ' ~ iter.definition,
+              'Organization': {
+                'Moid': base_org_result.api_response.Moid
+              },
+              'UsePreferredVersion': (iter.version == 'preferred')
+            } | combine(
+              {'Version': iter.version | int} if iter.version != 'preferred' else {}
+            )
+          }}
         Blueprints: "{{ iter.blueprint_overrides }}"
         WorkloadInstancePrefix: "{{ base_name }}_{{ iter.group_abbr }}_{{ iter.def_abbr }}"
       state: present
@@ -480,18 +481,6 @@
       label: "{{ base_name }}_{{ iter.group_name }}_{{ iter.definition }}"
     register: workload_deployment
 
-
-
-# NOW
-#TODO: path tags
-#TODO: potentially allow for selecting the resource selection criteria in the org
-
-# LATER
-#TODO: firmware upgrade?
-#TODO: Add devices to resource group based on variable input
-
-# FUTURE
-#TODO: Post deployment
-#TODO: Metrics: rules, dashboards, widgets,...?
-#TODO: Claim via Ansible?
-#TODO: Add ESXi blueprint once available
+  - name: Display Results
+    debug:
+      msg: "Processed {{ definitions | length }} Workload Definitions and {{ organizations | length }} Consumer Organizations: {{ definitions | map(attribute='name') | map('regex_replace', '^(.*)$', base_name + ' \\1') | list }}"

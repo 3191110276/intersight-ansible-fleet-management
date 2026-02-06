@@ -5,7 +5,7 @@
   gather_facts: no
 
   vars_files:
-    - vars/defaults.yaml
+    - vars/auth.yaml
     - vars/basics.yaml
     - vars/definitions.yaml
     - vars/deployments.yaml
