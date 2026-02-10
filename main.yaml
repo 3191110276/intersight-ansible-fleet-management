@@ -99,6 +99,9 @@
           SlotId: 1
 
   tasks:
+  # =============================================================================
+  # Step 0: Get Base Organization
+  # =============================================================================
   - name: Get Base Organization
     cisco.intersight.intersight_rest_api:
       resource_path: /organization/Organizations
@@ -106,6 +109,9 @@
         $filter: "Name eq '{{ base_org }}'"
     register: base_org_result
 
+  # =============================================================================
+  # Step 1: Local User Policy
+  # =============================================================================
   - name: Local User Policy
     cisco.intersight.intersight_local_user_policy:
       api_private_key: "{{ api_private_key }}"
@@ -119,10 +125,9 @@
       state: present
     register: local_user
 
-  - name: Debug Local User Policy Response
-    debug:
-      msg: "ObjectType: {{ local_user.api_response.ObjectType }}, Moid: {{ local_user.api_response.Moid }}"
-
+  # =============================================================================
+  # Step 2: IP Pool
+  # =============================================================================
   - name: IP Pool
     cisco.intersight.intersight_ip_pool:
       api_private_key: "{{ api_private_key }}"
@@ -141,9 +146,27 @@
       state: present
     register: ip_pool
 
+  # =============================================================================
+  # Step 3: Build Blueprints array
+  # =============================================================================
   - name: Build Blueprint Arrays - Add Chassis
     set_fact:
-      blueprints_by_definition: "{{ blueprints_by_definition | default({}) | combine({ item.name: [unified_edge | combine({'RefName': unified_edge.Name | replace(' - ', '___') | replace(' ', '_')}, recursive=True) | combine(item.chassis_overrides | default({}), recursive=True)] }) }}"
+      blueprints_by_definition: >-
+        {{
+          blueprints_by_definition | default({}) | combine({
+            item.name: [
+              unified_edge
+              | combine(
+                  {'RefName': unified_edge.Name | replace(' - ', '___') | replace(' ', '_')},
+                  recursive=True
+                )
+              | combine(
+                  item.chassis_overrides | default({}),
+                  recursive=True
+                )
+            ]
+          })
+        }}
     loop: "{{ definitions }}"
     loop_control:
       label: "{{ item.name }}"
@@ -177,6 +200,9 @@
     loop_control:
       label: "{{ item.0.name }} - Slot {{ item.1.slot_id }}"
 
+  # =============================================================================
+  # Step 4: Set Workload Definition version
+  # =============================================================================
   - name: Query Existing Workload Definitions
     cisco.intersight.intersight_rest_api:
       resource_path: /workload/WorkloadDefinitions
@@ -207,6 +233,9 @@
     loop_control:
       label: "{{ item.item.name }}"
 
+  # =============================================================================
+  # Step 5: Create or update Workload Definitions
+  # =============================================================================
   - name: Workload Definition - Create New
     cisco.intersight.intersight_rest_api:
       resource_path: /workload/WorkloadDefinitions
@@ -271,6 +300,9 @@
     loop_control:
       label: "{{ item.item.name }}"
 
+  # =============================================================================
+  # Step 6: Build list of devices
+  # =============================================================================
   - name: Build Chassis Serial List
     set_fact:
       all_chassis_serials: >-
@@ -316,6 +348,9 @@
       - chassis_query.api_response is iterable
       - item.chassis is defined
 
+  # =============================================================================
+  # Step 7: Create Resource Group from devices
+  # =============================================================================
   - name: Consumer Resource Groups
     cisco.intersight.intersight_rest_api:
       resource_path: /resource/Groups
@@ -337,6 +372,9 @@
       label: "{{ base_name }}_{{ iter.name }}"
     register: consumer_rg
 
+  # =============================================================================
+  # Step 8: Create consumer Organization
+  # =============================================================================
   - name: Consumer Organizations
     cisco.intersight.intersight_rest_api:
       resource_path: /organization/Organizations
@@ -354,6 +392,9 @@
       label: "{{ base_name }}_{{ iter.name }}"
     register: consumer_org
 
+  # =============================================================================
+  # Step 9: Configure Organization Sharing between base and consumer
+  # =============================================================================
   - name: Organization Sharing
     cisco.intersight.intersight_rest_api:
       resource_path: /iam/SharingRules
@@ -382,6 +423,9 @@
       label: "{{ base_name }}_{{ iter.name }}"
     register: sharing_rule
 
+  # =============================================================================
+  # Step 10: Create Schedule Policy
+  # =============================================================================
   - name: Schedule Policy
     cisco.intersight.intersight_rest_api:
       resource_path: /scheduler/SchedulePolicies
@@ -406,6 +450,9 @@
       label: "{{ base_name }}_{{ iter.org }}"
     register: schedule_policy
 
+  # =============================================================================
+  # Step 11: Determine deployments from variables
+  # =============================================================================
   - name: Flatten deployment groups into individual deployments
     set_fact:
       flattened_deployments: >-
@@ -437,6 +484,9 @@
     loop_control:
       label: "{{ item.0.name }} - {{ item.1.definition }}"
 
+  # =============================================================================
+  # Step 11: Create Workload Deployments
+  # =============================================================================
   - name: Workload Deployments
     cisco.intersight.intersight_rest_api:
       resource_path: /workload/WorkloadDeployments
@@ -480,7 +530,3 @@
       loop_var: iter
       label: "{{ base_name }}_{{ iter.group_name }}_{{ iter.definition }}"
     register: workload_deployment
-
-  - name: Display Results
-    debug:
-      msg: "Processed {{ definitions | length }} Workload Definitions and {{ organizations | length }} Consumer Organizations: {{ definitions | map(attribute='name') | map('regex_replace', '^(.*)$', base_name + ' \\1') | list }}"

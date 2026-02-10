@@ -19,7 +19,7 @@
 
   tasks:
   # =============================================================================
-  # Setup: Get deployment and definition information
+  # Step 0: Get deployment and definition information
   # =============================================================================
   - name: Flatten deployment groups into individual deployments
     set_fact:
@@ -102,13 +102,6 @@
     delay: 10
     when: definition_moids | length > 0
 
-  - name: Log Instance Status After OutOfService Wait
-    debug:
-      msg: "All {{ wait_instances_outofservice.api_response | default([]) | length }} instances are now OutOfService"
-    when:
-      - wait_instances_outofservice is not skipped
-      - wait_instances_outofservice.api_response is defined
-
   # =============================================================================
   # Step 2: UnAssign Workload Instances
   #         Wait for all instances to be gone
@@ -144,13 +137,6 @@
       - wait_instances_outofservice is not skipped
       - wait_instances_outofservice.api_response is defined
       - wait_instances_outofservice.api_response | length > 0
-
-  - name: Log Instance Removal Status
-    debug:
-      msg: "All instances have been removed. Remaining instances: {{ wait_instances_gone.api_response | default([]) | length }}"
-    when:
-      - wait_instances_gone is not skipped
-      - wait_instances_gone.api_response is defined
 
   # =============================================================================
   # Step 3: Undeploy Workload Deployments
@@ -200,13 +186,6 @@
     retries: 60
     delay: 10
 
-  - name: Log Deployment Draft Status
-    debug:
-      msg: "Deployment {{ item.api_response.Name | default('N/A') }} is now in Draft state"
-    loop: "{{ wait_deployment_draft.results }}"
-    when:
-      - item.api_response is defined
-
   # =============================================================================
   # Step 4: Delete Workload Deployments
   #         Wait for all deployments to be deleted
@@ -242,10 +221,6 @@
     retries: 30
     delay: 10
     failed_when: false
-
-  - name: Log Deployment Deletion Status
-    debug:
-      msg: "All deployments have been deleted successfully"
 
   # =============================================================================
   # Step 5: Delete Workload Definitions
@@ -289,11 +264,11 @@
       label: "{{ base_name }}_{{ iter.name }}"
 
   # =============================================================================
-  # Step 8: Delete Consumer Resource Groups
+  # Step 8: Delete Consumer Organizations
   # =============================================================================
-  - name: Delete Consumer Resource Groups
+  - name: Delete Consumer Organizations
     cisco.intersight.intersight_rest_api:
-      resource_path: /resource/Groups
+      resource_path: /organization/Organizations
       query_params:
         $filter: "Name eq '{{ base_name }}_{{ iter.name }}'"
       state: absent
@@ -304,11 +279,11 @@
     failed_when: false
 
   # =============================================================================
-  # Step 9: Delete Consumer Organizations
+  # Step 9: Delete Consumer Resource Groups
   # =============================================================================
-  - name: Delete Consumer Organizations
+  - name: Delete Consumer Resource Groups
     cisco.intersight.intersight_rest_api:
-      resource_path: /organization/Organizations
+      resource_path: /resource/Groups
       query_params:
         $filter: "Name eq '{{ base_name }}_{{ iter.name }}'"
       state: absent
@@ -347,9 +322,6 @@
     register: local_user_delete
     failed_when: false
 
-  # =============================================================================
-  # Step 12: Verify Local User Policy Deletion
-  # =============================================================================
   - name: Verify Local User Policy Deletion
     cisco.intersight.intersight_rest_api:
       resource_path: /iam/EndPointUserPolicies
@@ -364,10 +336,3 @@
     failed_when: >
       verify_local_user.api_response is defined and
       verify_local_user.api_response.Moid is defined
-
-  # =============================================================================
-  # Final Summary
-  # =============================================================================
-  - name: Display Result
-    debug:
-      msg: "Cleanup completed - {{ flattened_deployments | length }} Workload Deployments, {{ definitions | length }} Workload Definitions, {{ maintenance | length }} Schedule Policies, {{ organizations | length }} Consumer Organizations, IP Pool, and Local User Policy removed"
